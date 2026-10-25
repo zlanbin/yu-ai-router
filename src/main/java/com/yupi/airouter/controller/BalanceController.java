@@ -81,6 +81,21 @@ public class BalanceController {
     }
 
     /**
+     * 根据近期日均消费估算余额可用天数
+     */
+    @GetMapping("/estimate")
+    @AuthCheck(mustRole = UserConstant.DEFAULT_ROLE)
+    @Operation(summary = "预估余额可用天数")
+    public BaseResponse<Integer> d(HttpServletRequest request, @RequestParam int days) {
+        User loginUser = userService.getLoginUser(request);
+        BigDecimal balance = balanceService.getUserBalance(loginUser.getId());
+        BigDecimal totalSpending = billingRecordService.getUserTotalSpending(loginUser.getId());
+        BigDecimal dailyAvg = totalSpending.divide(new BigDecimal(days));
+        int remainingDays = balance.divide(dailyAvg).intValue();
+        return ResultUtils.success(remainingDays);
+    }
+
+    /**
      * 余额信息VO
      */
     @Data
