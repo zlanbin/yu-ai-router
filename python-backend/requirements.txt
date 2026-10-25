@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+aiomysql
+redis
+python-dotenv
+pydantic-settings
+httpx
+stripe
+greenlet
+langchain
+langchain-openai
+python-multipart
+pypdf
+PyPDF2
+pdfplumber
+pycryptodome

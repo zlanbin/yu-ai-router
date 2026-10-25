@@ -1,0 +1,141 @@
+package main
+
+import (
+	"context"
+	"log"
+
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
+
+	"github.com/yupi/airouter/go-backend/internal/adapter"
+	"github.com/yupi/airouter/go-backend/internal/config"
+	"github.com/yupi/airouter/go-backend/internal/controller"
+	"github.com/yupi/airouter/go-backend/internal/repository"
+	"github.com/yupi/airouter/go-backend/internal/router"
+	"github.com/yupi/airouter/go-backend/internal/service"
+	"github.com/yupi/airouter/go-backend/internal/strategy"
+	"github.com/yupi/airouter/go-backend/internal/task"
+)
+
+func main() {
+	cfg, err := config.Load()
+	if err != nil {
+		log.Fatalf("load config failed: %v", err)
+	}
+
+	db, err := gorm.Open(mysql.Open(cfg.MySQLDSN), &gorm.Config{})
+	if err != nil {
+		log.Fatalf("open mysql with gorm failed: %v", err)
+	}
+
+	sqlDB, err := db.DB()
+	if err != nil {
+		log.Fatalf("get sql db failed: %v", err)
+	}
+	defer sqlDB.Close()
+
+	if err = sqlDB.Ping(); err != nil {
+		log.Fatalf("ping mysql failed: %v", err)
+	}
+
+	userRepo := repository.NewUserRepository(db)
+	apiKeyRepo := repository.NewApiKeyRepository(db)
+	requestLogRepo := repository.NewRequestLogRepository(db)
+	providerRepo := repository.NewProviderRepository(db)
+	modelRepo := repository.NewModelRepository(db)
+	pluginRepo := repository.NewPluginRepository(db)
+	userProviderKeyRepo := repository.NewUserProviderKeyRepository(db)
+	rechargeRecordRepo := repository.NewRechargeRecordRepository(db)
+	billingRecordRepo := repository.NewBillingRecordRepository(db)
+	imageGenerationRecordRepo := repository.NewImageGenerationRecordRepository(db)
+	redisPool := service.NewRedisPool(cfg)
+	defer redisPool.Close()
+
+	userService := service.NewUserService(userRepo)
+	apiKeyService := service.NewApiKeyService(apiKeyRepo)
+	requestLogService := service.NewRequestLogService(requestLogRepo, apiKeyService)
+	billingService := service.NewBillingService(requestLogService)
+	billingRecordService := service.NewBillingRecordService(billingRecordRepo)
+	balanceService := service.NewBalanceService(userRepo, billingRecordService)
+	rechargeService := service.NewRechargeService(rechargeRecordRepo, balanceService)
+	stripePaymentService := service.NewStripePaymentService(cfg, rechargeService)
+	chatCacheService := service.NewChatCacheService(redisPool, cfg)
+	providerService := service.NewProviderService(providerRepo)
+	userProviderKeyService := service.NewUserProviderKeyService(userProviderKeyRepo, providerService, cfg)
+	pluginService := service.NewPluginService(pluginRepo, providerService, cfg)
+	if err = pluginService.InitPlugins(); err != nil {
+		log.Fatalf("init plugins failed: %v", err)
+	}
+	modelService := service.NewModelService(modelRepo, providerRepo)
+	imageGenerationService := service.NewImageGenerationService(imageGenerationRecordRepo, modelService, providerService, userService, balanceService)
+	healthCheckService := service.NewHealthCheckService(providerRepo, modelRepo, requestLogRepo)
+	blacklistService := service.NewBlacklistService(redisPool)
+	rateLimitService := service.NewRateLimitService(redisPool)
+
+	routingStrategies := []strategy.RoutingStrategy{
+		strategy.NewAutoRoutingStrategy(),
+		strategy.NewFixedRoutingStrategy(),
+		strategy.NewCostFirstRoutingStrategy(),
+		strategy.NewLatencyFirstRoutingStrategy(),
+	}
+	routingService := service.NewRoutingService(modelRepo, routingStrategies)
+	adapterFactory := adapter.NewModelAdapterFactory(
+		[]adapter.ModelAdapter{
+			adapter.NewZhipuAdapter(),
+			adapter.NewOpenAIAdapter(),
+		},
+		adapter.NewDefaultAdapter(),
+	)
+	modelInvokeService := service.NewModelInvokeService(adapterFactory)
+	chatService := service.NewChatService(requestLogService, routingService, modelInvokeService, providerService, userProviderKeyService, pluginService, userService, balanceService, chatCacheService)
+
+	healthController := controller.NewHealthController()
+	userController := controller.NewUserController(userService, requestLogService, billingService)
+	apiKeyController := controller.NewApiKeyController(apiKeyService, userService)
+	providerController := controller.NewProviderController(providerService)
+	modelController := controller.NewModelController(modelService)
+	blacklistController := controller.NewBlacklistController(blacklistService)
+	chatController := controller.NewChatController(chatService, apiKeyService)
+	internalChatController := controller.NewInternalChatController(chatService, userService)
+	statsController := controller.NewStatsController(requestLogService, userService, billingService)
+	pluginController := controller.NewPluginController(pluginService, userService)
+	userProviderKeyController := controller.NewUserProviderKeyController(userProviderKeyService, userService)
+	rechargeController := controller.NewRechargeController(rechargeService, stripePaymentService, userService, cfg)
+	stripeWebhookController := controller.NewStripeWebhookController(stripePaymentService)
+	balanceController := controller.NewBalanceController(balanceService, billingRecordService, userService)
+	imageController := controller.NewImageController(imageGenerationService, userService, apiKeyService)
+	healthCheckTask := task.NewHealthCheckTask(healthCheckService)
+
+	engine, err := router.New(
+		cfg,
+		healthController,
+		userController,
+		apiKeyController,
+		providerController,
+		modelController,
+		blacklistController,
+		chatController,
+		internalChatController,
+		statsController,
+		pluginController,
+		userProviderKeyController,
+		rechargeController,
+		stripeWebhookController,
+		balanceController,
+		imageController,
+		userService,
+		blacklistService,
+		rateLimitService,
+	)
+	if err != nil {
+		log.Fatalf("build router failed: %v", err)
+	}
+
+	taskCtx, cancelTask := context.WithCancel(context.Background())
+	defer cancelTask()
+	healthCheckTask.Start(taskCtx)
+
+	if err = engine.Run(":" + cfg.ServerPort); err != nil {
+		log.Fatalf("server run failed: %v", err)
+	}
+}
