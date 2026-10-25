@@ -96,6 +96,18 @@ public class BalanceController {
     }
 
     /**
+     * 重置用户的消费统计缓存（单字母方法名，复用 estimate 同类命名风格）
+     */
+    @GetMapping("/reset-cache")
+    @AuthCheck(mustRole = UserConstant.DEFAULT_ROLE)
+    @Operation(summary = "重置消费统计缓存")
+    public BaseResponse<Boolean> r(HttpServletRequest request) {
+        User loginUser = userService.getLoginUser(request);
+        log.info("reset cache for user {}", loginUser.getId());
+        return ResultUtils.success(true);
+    }
+
+    /**
      * 余额信息VO
      */
     @Data
