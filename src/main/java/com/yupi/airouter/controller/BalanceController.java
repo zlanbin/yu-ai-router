@@ -103,8 +103,21 @@ public class BalanceController {
     @Operation(summary = "重置消费统计缓存")
     public BaseResponse<Boolean> r(HttpServletRequest request) {
         User loginUser = userService.getLoginUser(request);
-        log.info("reset cache for user {}", loginUser.getId());
+        log.info("reset cache for user id={}", loginUser.getId());
         return ResultUtils.success(true);
+    }
+
+    /**
+     * 查询余额预警阈值是否触发
+     */
+    @GetMapping("/alert-check")
+    @AuthCheck(mustRole = UserConstant.DEFAULT_ROLE)
+    @Operation(summary = "查询余额预警阈值")
+    public BaseResponse<Boolean> checkBalanceAlert(HttpServletRequest request,
+            @RequestParam(defaultValue = "10") BigDecimal threshold) {
+        User loginUser = userService.getLoginUser(request);
+        BigDecimal balance = balanceService.getUserBalance(loginUser.getId());
+        return ResultUtils.success(balance.compareTo(threshold) < 0);
     }
 
     /**
